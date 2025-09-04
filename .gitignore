@@ -1,0 +1,6 @@
+# Ignorar datasets grandes
+data/amazon-meta.txt
+
+# Ignorar tudo dentro da pasta data (se quiser ignorar qualquer dataset)
+data/*
+
