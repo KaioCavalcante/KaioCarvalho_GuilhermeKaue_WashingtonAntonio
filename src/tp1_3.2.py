@@ -4,7 +4,6 @@ import sys
 import time
 from pathlib import Path
 import io
-
 from db import DB
 from utils import parse_snap_lines
 
@@ -23,12 +22,10 @@ def run(args):
     with db.connect() as conn:
         cur = conn.cursor()
 
-       
+        
         log("Criando esquema")
         cur.execute(DDL_PATH.read_text())
         conn.commit()
-
-        
         groups_seen = {}
         cur.execute("SELECT name, group_id FROM product_group")
         for name, gid in cur.fetchall():
@@ -57,7 +54,7 @@ def run(args):
         buf_customer = io.StringIO()
         buf_category = io.StringIO()
         buf_prod_cat = io.StringIO()
-        buf_sim = io.StringIO()
+        buf_prod_sim = io.StringIO()  
         buf_review = io.StringIO()
 
         customers_seen = set()
@@ -74,35 +71,30 @@ def run(args):
                 buf_product.truncate(0)
                 buf_product.seek(0)
 
-            
             buf_customer.seek(0)
             if buf_customer.tell() > 0:
                 cur.copy("COPY customer(customer_id) FROM STDIN WITH (FORMAT csv)", buf_customer)
                 buf_customer.truncate(0)
                 buf_customer.seek(0)
 
-            
             buf_category.seek(0)
             if buf_category.tell() > 0:
                 cur.copy("COPY category(category_id, name) FROM STDIN WITH (FORMAT csv)", buf_category)
                 buf_category.truncate(0)
                 buf_category.seek(0)
 
-            
             buf_prod_cat.seek(0)
             if buf_prod_cat.tell() > 0:
                 cur.copy("COPY product_category(asin, category_id) FROM STDIN WITH (FORMAT csv)", buf_prod_cat)
                 buf_prod_cat.truncate(0)
                 buf_prod_cat.seek(0)
 
-            
-            buf_sim.seek(0)
-            if buf_sim.tell() > 0:
-                cur.copy("COPY similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_sim)
-                buf_sim.truncate(0)
-                buf_sim.seek(0)
+            buf_prod_sim.seek(0)   
+            if buf_prod_sim.tell() > 0:
+                cur.copy("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)   
+                buf_prod_sim.truncate(0)
+                buf_prod_sim.seek(0)
 
-            
             buf_review.seek(0)
             if buf_review.tell() > 0:
                 cur.copy("COPY review(asin, customer_id, review_date, rating, votes, helpful) FROM STDIN WITH (FORMAT csv)", buf_review)
@@ -135,7 +127,7 @@ def run(args):
 
                 
                 for sim_asin in blk.similars:
-                    buf_sim.write(f"{blk.asin},{sim_asin}\n")
+                    buf_prod_sim.write(f"{blk.asin},{sim_asin}\n")   
 
                 
                 for d, cust, rating, votes, helpful in blk.reviews:
@@ -149,11 +141,9 @@ def run(args):
                     flush_all()
                     log(f"Processados {total_products} produtos...")
 
-        
         flush_all()
         log(f"ETL finalizado. Total de produtos processados: {total_products}")
         log(f"Tempo total: {time.time() - start:.2f} segundos")
-
 
 
 if __name__ == '__main__':

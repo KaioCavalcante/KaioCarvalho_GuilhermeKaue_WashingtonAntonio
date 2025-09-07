@@ -1,5 +1,5 @@
 DROP TABLE IF EXISTS review CASCADE;
-DROP TABLE IF EXISTS similar CASCADE;
+DROP TABLE IF EXISTS product_similar CASCADE;
 DROP TABLE IF EXISTS product_category CASCADE;
 DROP TABLE IF EXISTS category CASCADE;
 DROP TABLE IF EXISTS customer CASCADE;
@@ -33,10 +33,12 @@ CREATE TABLE product_category (
     PRIMARY KEY (asin, category_id)
 );
 
-CREATE TABLE similar (
-    asin TEXT REFERENCES product(asin),
-    similar_asin TEXT,
-    PRIMARY KEY (asin, similar_asin)
+CREATE TABLE product_similar (
+    asin        VARCHAR(20) NOT NULL,
+    similar_asin VARCHAR(20) NOT NULL,
+    PRIMARY KEY (asin, similar_asin),
+    FOREIGN KEY (asin) REFERENCES product(asin),
+    FOREIGN KEY (similar_asin) REFERENCES product(asin)
 );
 
 CREATE TABLE review (
