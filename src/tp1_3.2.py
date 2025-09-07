@@ -8,7 +8,7 @@ import io
 from db import DB
 from utils import parse_snap_lines
 
-DDL_PATH = Path('/app/sql/schema.sql')
+DDL_PATH = Path('/app/sql/esquema.sql')
 BATCH_SIZE = 5000
 
 
@@ -24,7 +24,7 @@ def run(args):
         cur = conn.cursor()
 
        
-        log("Criando esquema...")
+        log("Criando esquema")
         cur.execute(DDL_PATH.read_text())
         conn.commit()
 
