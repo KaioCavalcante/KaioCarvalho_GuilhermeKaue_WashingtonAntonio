@@ -22,10 +22,11 @@ def run(args):
     with db.connect() as conn:
         cur = conn.cursor()
 
-        
+        # Cria esquema
         log("Criando esquema")
         cur.execute(DDL_PATH.read_text())
         conn.commit()
+
         groups_seen = {}
         cur.execute("SELECT name, group_id FROM product_group")
         for name, gid in cur.fetchall():
@@ -49,12 +50,12 @@ def run(args):
             groups_seen[name] = gid
             return gid
 
-        
+        # Buffers
         buf_product = io.StringIO()
         buf_customer = io.StringIO()
         buf_category = io.StringIO()
         buf_prod_cat = io.StringIO()
-        buf_prod_sim = io.StringIO()  
+        buf_prod_sim = io.StringIO()
         buf_review = io.StringIO()
 
         customers_seen = set()
@@ -63,10 +64,8 @@ def run(args):
 
         def flush_all():
             """Usa COPY em transação para desempenho"""
-            
             buf_product.seek(0)
             if buf_product.tell() > 0:
-                buf_product.seek(0)
                 cur.copy("COPY product(asin, title, salesrank, group_id) FROM STDIN WITH (FORMAT csv)", buf_product)
                 buf_product.truncate(0)
                 buf_product.seek(0)
@@ -89,9 +88,9 @@ def run(args):
                 buf_prod_cat.truncate(0)
                 buf_prod_cat.seek(0)
 
-            buf_prod_sim.seek(0)   
+            buf_prod_sim.seek(0)
             if buf_prod_sim.tell() > 0:
-                cur.copy("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)   
+                cur.copy("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)
                 buf_prod_sim.truncate(0)
                 buf_prod_sim.seek(0)
 
@@ -103,40 +102,51 @@ def run(args):
 
             conn.commit()
 
-        
+        # Processa arquivo
         log(f"Lendo arquivo {args.input} ...")
         total_products = 0
         with open(args.input, 'r', encoding='utf-8') as f:
             for blk in parse_snap_lines(f):
                 total_products += 1
 
-                
                 group_id = get_group_id(blk.group)
 
-                
-                buf_product.write(f"{blk.asin},{blk.title.replace(',', ' ')},{blk.salesrank if blk.salesrank else ''},{group_id}\n")
-                products_seen.add(blk.asin)
+                # Protege valores None
+                asin = blk.asin if blk.asin else ""
+                title = blk.title.replace(',', ' ') if blk.title else ""
+                salesrank = blk.salesrank if blk.salesrank else ""
 
-                
+                buf_product.write(f"{asin},{title},{salesrank},{group_id}\n")
+                products_seen.add(asin)
+
+                # Categorias
                 for path in blk.categories_paths:
                     for name, cid in path:
                         if cid not in categories_seen:
                             buf_category.write(f"{cid},{name}\n")
                             categories_seen.add(cid)
-                        buf_prod_cat.write(f"{blk.asin},{cid}\n")
+                        buf_prod_cat.write(f"{asin},{cid}\n")
 
-                
+                # Produtos similares
                 for sim_asin in blk.similars:
-                    buf_prod_sim.write(f"{blk.asin},{sim_asin}\n")   
+                    if sim_asin:
+                        buf_prod_sim.write(f"{asin},{sim_asin}\n")
 
-                
+                # Reviews
                 for d, cust, rating, votes, helpful in blk.reviews:
+                    cust = cust if cust else "unknown"
+                    d = d if d else "2000-01-01"  # fallback
+                    rating = rating if rating else 0
+                    votes = votes if votes else 0
+                    helpful = helpful if helpful else 0
+
                     if cust not in customers_seen:
                         buf_customer.write(f"{cust}\n")
                         customers_seen.add(cust)
-                    buf_review.write(f"{blk.asin},{cust},{d},{rating},{votes},{helpful}\n")
 
-                
+                    buf_review.write(f"{asin},{cust},{d},{rating},{votes},{helpful}\n")
+
+                # Flush por lote
                 if total_products % BATCH_SIZE == 0:
                     flush_all()
                     log(f"Processados {total_products} produtos...")
