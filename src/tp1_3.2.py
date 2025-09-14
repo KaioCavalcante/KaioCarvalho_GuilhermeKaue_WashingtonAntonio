@@ -64,54 +64,51 @@ def run(args):
 
         def flush_all():
             """Usa COPY em transação para desempenho"""
-            buf_product.seek(0)
-            if buf_product.tell() > 0:
-                cur.copy("COPY product(asin, title, salesrank, group_id) FROM STDIN WITH (FORMAT csv)", buf_product)
-                buf_product.truncate(0)
+            if buf_product.getvalue():
                 buf_product.seek(0)
+                cur.copy_expert("COPY product(asin, title, salesrank, group_id) FROM STDIN WITH (FORMAT csv)", buf_product)
+                buf_product.truncate(0)
 
-            buf_customer.seek(0)
-            if buf_customer.tell() > 0:
-                cur.copy("COPY customer(customer_id) FROM STDIN WITH (FORMAT csv)", buf_customer)
-                buf_customer.truncate(0)
+            if buf_customer.getvalue():
                 buf_customer.seek(0)
+                cur.copy_expert("COPY customer(customer_id) FROM STDIN WITH (FORMAT csv)", buf_customer)
+                buf_customer.truncate(0)
 
-            buf_category.seek(0)
-            if buf_category.tell() > 0:
-                cur.copy("COPY category(category_id, name) FROM STDIN WITH (FORMAT csv)", buf_category)
-                buf_category.truncate(0)
+            if buf_category.getvalue():
                 buf_category.seek(0)
+                cur.copy_expert("COPY category(category_id, name) FROM STDIN WITH (FORMAT csv)", buf_category)
+                buf_category.truncate(0)
 
-            buf_prod_cat.seek(0)
-            if buf_prod_cat.tell() > 0:
-                cur.copy("COPY product_category(asin, category_id) FROM STDIN WITH (FORMAT csv)", buf_prod_cat)
-                buf_prod_cat.truncate(0)
+            if buf_prod_cat.getvalue():
                 buf_prod_cat.seek(0)
+                cur.copy_expert("COPY product_category(asin, category_id) FROM STDIN WITH (FORMAT csv)", buf_prod_cat)
+                buf_prod_cat.truncate(0)
 
-            buf_prod_sim.seek(0)
-            if buf_prod_sim.tell() > 0:
-                cur.copy("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)
-                buf_prod_sim.truncate(0)
+            if buf_prod_sim.getvalue():
                 buf_prod_sim.seek(0)
+                cur.copy_expert("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)
+                buf_prod_sim.truncate(0)
 
-            buf_review.seek(0)
-            if buf_review.tell() > 0:
-                cur.copy("COPY review(asin, customer_id, review_date, rating, votes, helpful) FROM STDIN WITH (FORMAT csv)", buf_review)
-                buf_review.truncate(0)
+            if buf_review.getvalue():
                 buf_review.seek(0)
+                cur.copy_expert("COPY review(asin, customer_id, review_date, rating, votes, helpful) FROM STDIN WITH (FORMAT csv)", buf_review)
+                buf_review.truncate(0)
 
             conn.commit()
 
         # Processa arquivo
         log(f"Lendo arquivo {args.input} ...")
         total_products = 0
+        total_reviews = 0
+        total_similars = 0
+        total_categories = 0
+
         with open(args.input, 'r', encoding='utf-8') as f:
             for blk in parse_snap_lines(f):
                 total_products += 1
 
                 group_id = get_group_id(blk.group)
 
-                # Protege valores None
                 asin = blk.asin if blk.asin else ""
                 title = blk.title.replace(',', ' ') if blk.title else ""
                 salesrank = blk.salesrank if blk.salesrank else ""
@@ -122,6 +119,7 @@ def run(args):
                 # Categorias
                 for path in blk.categories_paths:
                     for name, cid in path:
+                        total_categories += 1
                         if cid not in categories_seen:
                             buf_category.write(f"{cid},{name}\n")
                             categories_seen.add(cid)
@@ -130,12 +128,14 @@ def run(args):
                 # Produtos similares
                 for sim_asin in blk.similars:
                     if sim_asin:
+                        total_similars += 1
                         buf_prod_sim.write(f"{asin},{sim_asin}\n")
 
                 # Reviews
                 for d, cust, rating, votes, helpful in blk.reviews:
+                    total_reviews += 1
                     cust = cust if cust else "unknown"
-                    d = d if d else "2000-01-01"  # fallback
+                    d = d if d else "2000-01-01"
                     rating = rating if rating else 0
                     votes = votes if votes else 0
                     helpful = helpful if helpful else 0
@@ -146,13 +146,13 @@ def run(args):
 
                     buf_review.write(f"{asin},{cust},{d},{rating},{votes},{helpful}\n")
 
-                # Flush por lote
                 if total_products % BATCH_SIZE == 0:
                     flush_all()
                     log(f"Processados {total_products} produtos...")
 
         flush_all()
-        log(f"ETL finalizado. Total de produtos processados: {total_products}")
+        log(f"ETL finalizado.")
+        log(f"Produtos: {total_products}, Categorias: {total_categories}, Similares: {total_similars}, Reviews: {total_reviews}")
         log(f"Tempo total: {time.time() - start:.2f} segundos")
 
 
