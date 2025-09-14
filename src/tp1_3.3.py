@@ -5,18 +5,20 @@ import pandas as pd
 from pathlib import Path
 from db import DB
 
+
 def log(msg):
     print(f"[DASHBOARD] {msg}")
+
 
 def run(args):
     db = DB(args.db_host, args.db_port, args.db_name, args.db_user, args.db_pass)
 
     with db.connect() as conn:
-        # Função auxiliar para rodar query e opcionalmente salvar CSV
+        # Função auxiliar para rodar query e salvar CSV
         def execute_query(title, sql, params=None, filename=None):
             log(title)
             df = pd.read_sql(sql, conn, params=params)
-            print(df.head(20))  # imprime os primeiros resultados
+            print(df.head(20))  # mostra os primeiros resultados
             if args.output:
                 outdir = Path(args.output)
                 outdir.mkdir(parents=True, exist_ok=True)
@@ -24,7 +26,7 @@ def run(args):
                     df.to_csv(outdir / filename, index=False)
             return df
 
-        # 1. Dado um produto, listar os 5 comentários mais úteis e com maior avaliação e os 5 mais úteis e com menor avaliação
+        # 1. Reviews mais úteis (positivas e negativas)
         if args.product_asin:
             execute_query(
                 "Top 5 reviews positivas",
@@ -51,7 +53,7 @@ def run(args):
                 filename="q1_top5_reviews_neg.csv"
             )
 
-        # 2. Produtos similares com maior salesrank
+        # 2. Produtos similares com melhor salesrank
         if args.product_asin:
             execute_query(
                 "Produtos similares com melhor salesrank",
@@ -81,15 +83,20 @@ def run(args):
                 filename="q3_daily_avg_rating.csv"
             )
 
-        # 4. Top 10 produtos líderes de venda por grupo
+        # 4. Top 10 produtos líderes de venda por grupo (corrigido sem QUALIFY)
         execute_query(
             "Top 10 produtos líderes de venda por grupo",
             """
-            SELECT g.name AS group_name, p.asin, p.title, p.salesrank
-            FROM product p
-            JOIN product_group g ON p.group_id = g.group_id
-            WHERE p.salesrank IS NOT NULL
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY g.name ORDER BY p.salesrank ASC) <= 10
+            WITH ranked AS (
+                SELECT g.name AS group_name, p.asin, p.title, p.salesrank,
+                       ROW_NUMBER() OVER (PARTITION BY g.name ORDER BY p.salesrank ASC) AS rn
+                FROM product p
+                JOIN product_group g ON p.group_id = g.group_id
+                WHERE p.salesrank IS NOT NULL
+            )
+            SELECT group_name, asin, title, salesrank
+            FROM ranked
+            WHERE rn <= 10
             """,
             filename="q4_top10_sales_by_group.csv"
         )
@@ -99,7 +106,7 @@ def run(args):
             "Top 10 produtos com maior média de avaliações úteis positivas",
             """
             SELECT p.asin, p.title,
-                   AVG(CASE WHEN r.helpful > 0 THEN r.helpful::float / NULLIF(r.votes, 0) ELSE 0 END) AS avg_usefulness
+                   AVG(CASE WHEN r.votes > 0 THEN r.helpful::float / r.votes ELSE 0 END) AS avg_usefulness
             FROM product p
             JOIN review r ON p.asin = r.asin
             GROUP BY p.asin, p.title
@@ -109,12 +116,12 @@ def run(args):
             filename="q5_top10_useful_products.csv"
         )
 
-        # 6. Top 5 categorias com maior média de avaliações úteis positivas por produto
+        # 6. Top 5 categorias com maior média de avaliações úteis positivas
         execute_query(
             "Top 5 categorias com maior média de avaliações úteis positivas por produto",
             """
             SELECT c.name,
-                   AVG(CASE WHEN r.helpful > 0 THEN r.helpful::float / NULLIF(r.votes, 0) ELSE 0 END) AS avg_usefulness
+                   AVG(CASE WHEN r.votes > 0 THEN r.helpful::float / r.votes ELSE 0 END) AS avg_usefulness
             FROM category c
             JOIN product_category pc ON c.category_id = pc.category_id
             JOIN review r ON pc.asin = r.asin
