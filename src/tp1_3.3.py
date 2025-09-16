@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
 import argparse
 import sys
 import pandas as pd
-from pathlib import Path
 from db import DB
 
 
@@ -14,17 +12,19 @@ def run(args):
     db = DB(args.db_host, args.db_port, args.db_name, args.db_user, args.db_pass)
 
     with db.connect() as conn:
-        # Função auxiliar para rodar query e salvar CSV
-        def execute_query(title, sql, params=None, filename=None):
+        def execute_query(title, sql, params=None):
             log(title)
-            df = pd.read_sql(sql, conn, params=params)
-            print(df.head(20))  # mostra os primeiros resultados
-            if args.output:
-                outdir = Path(args.output)
-                outdir.mkdir(parents=True, exist_ok=True)
-                if filename:
-                    df.to_csv(outdir / filename, index=False)
-            return df
+            cur = conn.cursor()
+            cur.execute(sql, params or ())
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            if not rows:
+                print("Nenhum resultado encontrado.\n")
+            else:
+                df = pd.DataFrame(rows, columns=columns)
+                print(df.to_string(index=False))
+                print("-" * 80)
+            return rows
 
         # 1. Reviews mais úteis (positivas e negativas)
         if args.product_asin:
@@ -37,8 +37,7 @@ def run(args):
                 ORDER BY r.rating DESC, r.helpful DESC
                 LIMIT 5
                 """,
-                params=(args.product_asin,),
-                filename="q1_top5_reviews_pos.csv"
+                params=(args.product_asin,)
             )
             execute_query(
                 "Top 5 reviews negativas",
@@ -49,8 +48,7 @@ def run(args):
                 ORDER BY r.rating ASC, r.helpful DESC
                 LIMIT 5
                 """,
-                params=(args.product_asin,),
-                filename="q1_top5_reviews_neg.csv"
+                params=(args.product_asin,)
             )
 
         # 2. Produtos similares com melhor salesrank
@@ -64,8 +62,7 @@ def run(args):
                 WHERE ps.asin = %s AND p.salesrank IS NOT NULL
                 ORDER BY p.salesrank ASC
                 """,
-                params=(args.product_asin,),
-                filename="q2_similar_better_salesrank.csv"
+                params=(args.product_asin,)
             )
 
         # 3. Evolução diária da média de avaliações
@@ -79,11 +76,10 @@ def run(args):
                 GROUP BY r.review_date
                 ORDER BY r.review_date
                 """,
-                params=(args.product_asin,),
-                filename="q3_daily_avg_rating.csv"
+                params=(args.product_asin,)
             )
 
-        # 4. Top 10 produtos líderes de venda por grupo (corrigido sem QUALIFY)
+        # 4. Top 10 produtos líderes de venda por grupo
         execute_query(
             "Top 10 produtos líderes de venda por grupo",
             """
@@ -97,8 +93,7 @@ def run(args):
             SELECT group_name, asin, title, salesrank
             FROM ranked
             WHERE rn <= 10
-            """,
-            filename="q4_top10_sales_by_group.csv"
+            """
         )
 
         # 5. Top 10 produtos com maior média de avaliações úteis positivas
@@ -112,8 +107,7 @@ def run(args):
             GROUP BY p.asin, p.title
             ORDER BY avg_usefulness DESC
             LIMIT 10
-            """,
-            filename="q5_top10_useful_products.csv"
+            """
         )
 
         # 6. Top 5 categorias com maior média de avaliações úteis positivas
@@ -128,8 +122,7 @@ def run(args):
             GROUP BY c.name
             ORDER BY avg_usefulness DESC
             LIMIT 5
-            """,
-            filename="q6_top5_useful_categories.csv"
+            """
         )
 
         # 7. Top 10 clientes que mais comentaram por grupo
@@ -142,9 +135,10 @@ def run(args):
             JOIN product_group g ON p.group_id = g.group_id
             GROUP BY g.name, r.customer_id
             ORDER BY g.name, total_reviews DESC
-            """,
-            filename="q7_top10_customers_per_group.csv"
+            """
         )
+
+    log("Consultas finalizadas com sucesso")
 
 
 if __name__ == '__main__':
@@ -155,7 +149,6 @@ if __name__ == '__main__':
     parser.add_argument('--db-user', required=True)
     parser.add_argument('--db-pass', required=True)
     parser.add_argument('--product-asin', help="ASIN do produto para consultas específicas")
-    parser.add_argument('--output', default="/app/out", help="Diretório para salvar CSVs")
     args = parser.parse_args()
 
     try:

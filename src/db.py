@@ -5,4 +5,4 @@ class DB:
         self.conninfo = f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
     def connect(self):
-        return psycopg.connect(self.conninfo)
+        return psycopg.connect(self.conninfo, autocommit=False, connect_timeout=10)

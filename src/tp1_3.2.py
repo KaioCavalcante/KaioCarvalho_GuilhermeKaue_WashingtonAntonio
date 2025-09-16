@@ -1,174 +1,169 @@
-#!/usr/bin/env python3
 import argparse
+import psycopg
+import pandas as pd
 import sys
-import time
-from pathlib import Path
-import io
-from db import DB
-from utils import parse_snap_lines
 
-DDL_PATH = Path('/app/sql/esquema.sql')
-BATCH_SIZE = 5000
+SCHEMA_SQL = """
+-- Tabelas principais
+CREATE TABLE IF NOT EXISTS product_group (
+    id SERIAL PRIMARY KEY,
+    name TEXT UNIQUE
+);
 
+CREATE TABLE IF NOT EXISTS product (
+    asin TEXT PRIMARY KEY,
+    title TEXT,
+    salesrank INT,
+    group_id INT REFERENCES product_group(id)
+);
 
-def log(msg):
-    print(f"[ETL] {msg}")
+CREATE TABLE IF NOT EXISTS product_similar (
+    asin TEXT REFERENCES product(asin),
+    similar_asin TEXT,
+    PRIMARY KEY (asin, similar_asin)
+);
 
+CREATE TABLE IF NOT EXISTS category (
+    id SERIAL PRIMARY KEY,
+    asin TEXT REFERENCES product(asin),
+    category TEXT
+);
+"""
 
-def run(args):
-    start = time.time()
-    db = DB(args.db_host, args.db_port, args.db_name, args.db_user, args.db_pass)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db-host", required=True)
+    parser.add_argument("--db-port", required=True, type=int)
+    parser.add_argument("--db-name", required=True)
+    parser.add_argument("--db-user", required=True)
+    parser.add_argument("--db-pass", required=True)
+    parser.add_argument("--input", required=True)
+    return parser.parse_args()
 
-    with db.connect() as conn:
-        cur = conn.cursor()
+def process_file(file_path):
+    products = []
+    similars = []
+    categories = []
+    current_product = {}
 
-        # Cria esquema
-        log("Criando esquema")
-        cur.execute(DDL_PATH.read_text())
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("ASIN:"):
+                current_product["asin"] = line.split("ASIN:")[1].strip()
+            elif line.startswith("  title:"):
+                current_product["title"] = line.split("title:")[1].strip()
+            elif line.startswith("  salesrank:"):
+                try:
+                    current_product["salesrank"] = int(line.split("salesrank:")[1].strip())
+                except:
+                    current_product["salesrank"] = None
+            elif line.startswith("  group:"):
+                current_product["group"] = line.split("group:")[1].strip()
+            elif line.startswith("  similar:"):
+                parts = line.split()
+                main_asin = current_product.get("asin")
+                for sim_asin in parts[2:]:
+                    similars.append({"asin": main_asin, "similar_asin": sim_asin})
+            elif line.startswith("  categories:"):
+                num_cats = int(line.split()[1])
+                current_product["num_categories"] = num_cats
+            elif line.startswith("|"):
+                main_asin = current_product.get("asin")
+                categories.append({"asin": main_asin, "category": line})
+            elif line == "":
+                if "asin" in current_product:
+                    if "title" not in current_product:
+                        current_product["title"] = None
+                    if "salesrank" not in current_product:
+                        current_product["salesrank"] = None
+                    if "group" not in current_product:
+                        current_product["group"] = None
+                    products.append(current_product)
+                current_product = {}
+
+    if "asin" in current_product:
+        if "title" not in current_product:
+            current_product["title"] = None
+        if "salesrank" not in current_product:
+            current_product["salesrank"] = None
+        if "group" not in current_product:
+            current_product["group"] = None
+        products.append(current_product)
+
+    df_products = pd.DataFrame(products)
+    df_similars = pd.DataFrame(similars)
+    df_categories = pd.DataFrame(categories)
+    return df_products, df_similars, df_categories
+
+def insert_into_db(df_products, df_similars, df_categories, conn):
+    with conn.cursor() as cur:
+        cur.execute(SCHEMA_SQL)
+        conn.commit()
+        groups = df_products["group"].dropna().unique()
+        group_map = {}
+        for g in groups:
+            cur.execute("INSERT INTO product_group (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id;", (g,))
+            res = cur.fetchone()
+            if res:
+                group_map[g] = res[0]
+        
+        cur.execute("SELECT id, name FROM product_group;")
+        for gid, name in cur.fetchall():
+            group_map[name] = gid
+
+       
+        for _, row in df_products.iterrows():
+            gid = group_map.get(row.get("group"))
+            cur.execute(
+                "INSERT INTO product (asin, title, salesrank, group_id) VALUES (%s, %s, %s, %s) ON CONFLICT (asin) DO NOTHING;",
+                (row["asin"], row["title"], row["salesrank"], gid)
+            )
+
+        
+        for _, row in df_similars.iterrows():
+            cur.execute(
+                "INSERT INTO product_similar (asin, similar_asin) VALUES (%s, %s) ON CONFLICT DO NOTHING;",
+                (row["asin"], row["similar_asin"])
+            )
+
+        
+        for _, row in df_categories.iterrows():
+            cur.execute(
+                "INSERT INTO category (asin, category) VALUES (%s, %s) ON CONFLICT DO NOTHING;",
+                (row["asin"], row["category"])
+            )
+
         conn.commit()
 
-        groups_seen = {}
-        cur.execute("SELECT name, group_id FROM product_group")
-        for name, gid in cur.fetchall():
-            groups_seen[name] = gid
-
-        def get_group_id(name: str):
-            if not name:
-                return None
-            if name in groups_seen:
-                return groups_seen[name]
-            cur.execute(
-                """
-                INSERT INTO product_group(name) 
-                VALUES (%s) 
-                ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name 
-                RETURNING group_id
-                """,
-                (name,)
-            )
-            gid = cur.fetchone()[0]
-            groups_seen[name] = gid
-            return gid
-
-        # Buffers
-        buf_product = io.StringIO()
-        buf_customer = io.StringIO()
-        buf_category = io.StringIO()
-        buf_prod_cat = io.StringIO()
-        buf_prod_sim = io.StringIO()
-        buf_review = io.StringIO()
-
-        customers_seen = set()
-        categories_seen = set()
-        products_seen = set()
-
-        def flush_all():
-            """Usa COPY em transação para desempenho"""
-            if buf_product.getvalue():
-                buf_product.seek(0)
-                cur.copy_expert("COPY product(asin, title, salesrank, group_id) FROM STDIN WITH (FORMAT csv)", buf_product)
-                buf_product.truncate(0)
-
-            if buf_customer.getvalue():
-                buf_customer.seek(0)
-                cur.copy_expert("COPY customer(customer_id) FROM STDIN WITH (FORMAT csv)", buf_customer)
-                buf_customer.truncate(0)
-
-            if buf_category.getvalue():
-                buf_category.seek(0)
-                cur.copy_expert("COPY category(category_id, name) FROM STDIN WITH (FORMAT csv)", buf_category)
-                buf_category.truncate(0)
-
-            if buf_prod_cat.getvalue():
-                buf_prod_cat.seek(0)
-                cur.copy_expert("COPY product_category(asin, category_id) FROM STDIN WITH (FORMAT csv)", buf_prod_cat)
-                buf_prod_cat.truncate(0)
-
-            if buf_prod_sim.getvalue():
-                buf_prod_sim.seek(0)
-                cur.copy_expert("COPY product_similar(asin, similar_asin) FROM STDIN WITH (FORMAT csv)", buf_prod_sim)
-                buf_prod_sim.truncate(0)
-
-            if buf_review.getvalue():
-                buf_review.seek(0)
-                cur.copy_expert("COPY review(asin, customer_id, review_date, rating, votes, helpful) FROM STDIN WITH (FORMAT csv)", buf_review)
-                buf_review.truncate(0)
-
-            conn.commit()
-
-        # Processa arquivo
-        log(f"Lendo arquivo {args.input} ...")
-        total_products = 0
-        total_reviews = 0
-        total_similars = 0
-        total_categories = 0
-
-        with open(args.input, 'r', encoding='utf-8') as f:
-            for blk in parse_snap_lines(f):
-                total_products += 1
-
-                group_id = get_group_id(blk.group)
-
-                asin = blk.asin if blk.asin else ""
-                title = blk.title.replace(',', ' ') if blk.title else ""
-                salesrank = blk.salesrank if blk.salesrank else ""
-
-                buf_product.write(f"{asin},{title},{salesrank},{group_id}\n")
-                products_seen.add(asin)
-
-                # Categorias
-                for path in blk.categories_paths:
-                    for name, cid in path:
-                        total_categories += 1
-                        if cid not in categories_seen:
-                            buf_category.write(f"{cid},{name}\n")
-                            categories_seen.add(cid)
-                        buf_prod_cat.write(f"{asin},{cid}\n")
-
-                # Produtos similares
-                for sim_asin in blk.similars:
-                    if sim_asin:
-                        total_similars += 1
-                        buf_prod_sim.write(f"{asin},{sim_asin}\n")
-
-                # Reviews
-                for d, cust, rating, votes, helpful in blk.reviews:
-                    total_reviews += 1
-                    cust = cust if cust else "unknown"
-                    d = d if d else "2000-01-01"
-                    rating = rating if rating else 0
-                    votes = votes if votes else 0
-                    helpful = helpful if helpful else 0
-
-                    if cust not in customers_seen:
-                        buf_customer.write(f"{cust}\n")
-                        customers_seen.add(cust)
-
-                    buf_review.write(f"{asin},{cust},{d},{rating},{votes},{helpful}\n")
-
-                if total_products % BATCH_SIZE == 0:
-                    flush_all()
-                    log(f"Processados {total_products} produtos...")
-
-        flush_all()
-        log(f"ETL finalizado.")
-        log(f"Produtos: {total_products}, Categorias: {total_categories}, Similares: {total_similars}, Reviews: {total_reviews}")
-        log(f"Tempo total: {time.time() - start:.2f} segundos")
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="ETL SNAP -> PostgreSQL")
-    parser.add_argument('--db-host', required=True)
-    parser.add_argument('--db-port', type=int, required=True)
-    parser.add_argument('--db-name', required=True)
-    parser.add_argument('--db-user', required=True)
-    parser.add_argument('--db-pass', required=True)
-    parser.add_argument('--input', required=True, help="Caminho para o arquivo SNAP")
-    args = parser.parse_args()
+def main():
+    args = parse_args()
+    print(f"Lendo arquivo: {args.input}")
 
     try:
-        run(args)
-        sys.exit(0)
+        df_products, df_similars, df_categories = process_file(args.input)
+        print(f"Produtos: {len(df_products)}, Similares: {len(df_similars)}, Categorias: {len(df_categories)}")
     except Exception as e:
-        print(f"[ERRO] {e}", file=sys.stderr)
+        print(f"Falha ao processar arquivo: {e}")
         sys.exit(1)
+
+    try:
+        print("Conectando ao banco de dados...")
+        with psycopg.connect(
+            host=args.db_host,
+            port=args.db_port,
+            dbname=args.db_name,
+            user=args.db_user,
+            password=args.db_pass
+        ) as conn:
+            print("Inserindo dados no banco...")
+            insert_into_db(df_products, df_similars, df_categories, conn)
+    except Exception as e:
+        print(f"Falha ao inserir no banco: {e}")
+        sys.exit(2)
+
+    print("Concluído com sucesso!")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
