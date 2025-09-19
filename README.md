@@ -11,4 +11,4 @@ docker compose run --rm app python src/tp1_3.2.py \
 
 # 4) Executar o Dashboard (todas as consultas)
 docker compose run --rm app python src/tp1_3.3.py \
-  --db-host db --db-port 5432 --db-name ecommerce --db-user postgres --db-pass postgres \
+  --db-host db --db-port 5432 --db-name ecommerce --db-user postgres --db-pass postgres
