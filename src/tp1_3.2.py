@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import psycopg
 import sys
@@ -52,7 +51,6 @@ CREATE TABLE IF NOT EXISTS review (
 );
 """
 
-# Regex aceitando "customer" e "cutomer", espaçamento flexível
 REVIEW_REGEX = re.compile(
     r"(\d{4}-\d{1,2}-\d{1,2})\s+(?:cutomer|customer):\s*(\S+)\s+rating:\s*(\d+)\s+votes:\s*(\d+)\s+helpful:\s*(\d+)",
     re.IGNORECASE
@@ -99,15 +97,14 @@ def process_file(file_path):
                     for sim_asin in parts[2:]:
                         similars.append((main_asin, sim_asin))
 
-            elif line.startswith("|"):  # categorias em formato hierárquico
+            elif line.startswith("|"):  
                 main_asin = current_product.get("asin")
                 if main_asin:
-                    # pega só o último nível da hierarquia (depois do último '|')
                     last_cat = line.split("|")[-1]
                     if last_cat:
                         categories.append((main_asin, last_cat))
 
-            elif line.startswith("    "):  # linha de review
+            elif line.startswith("    "):  
                 match = REVIEW_REGEX.search(line)
                 if match:
                     try:
@@ -123,7 +120,7 @@ def process_file(file_path):
                     except:
                         continue
 
-            elif line == "":  # fim de um produto
+            elif line == "": 
                 if "asin" in current_product:
                     products.append((
                         current_product.get("asin"),
@@ -140,8 +137,6 @@ def insert_into_db(products, similars, categories, customers, reviews, conn):
         print("[INFO] Criando schema...")
         cur.execute(SCHEMA_SQL)
         conn.commit()
-
-        # Grupos
         groups = set([p[3] for p in products if p[3] is not None])
         groups.add("Unknown")
         group_map = {}
@@ -158,8 +153,6 @@ def insert_into_db(products, similars, categories, customers, reviews, conn):
         cur.execute("SELECT group_id, name FROM product_group;")
         for gid, name in cur.fetchall():
             group_map[name] = gid
-
-        # Produtos
         product_values = [
             (asin, title, salesrank, group_map.get(group, group_map["Unknown"]))
             for asin, title, salesrank, group in products
@@ -170,16 +163,12 @@ def insert_into_db(products, similars, categories, customers, reviews, conn):
         )
         conn.commit()
         print(f"[INFO] {len(product_values)} produtos inseridos")
-
-        # Clientes
         cur.executemany(
             "INSERT INTO customer (customer_id) VALUES (%s) ON CONFLICT (customer_id) DO NOTHING;",
             [(c,) for c in customers]
         )
         conn.commit()
         print(f"[INFO] {len(customers)} clientes inseridos")
-
-        # Categorias
         category_set = set([c[1] for c in categories])
         category_map = {}
         for cat in category_set:
@@ -206,8 +195,6 @@ def insert_into_db(products, similars, categories, customers, reviews, conn):
         )
         conn.commit()
         print(f"[INFO] {len(product_category_values)} relações produto-categoria inseridas")
-
-        # Similares (apenas se existirem ambos produtos)
         valid_asins = set([p[0] for p in products])
         similars_validos = [(a, s) for a, s in similars if s in valid_asins and a in valid_asins]
         cur.executemany(
@@ -216,8 +203,6 @@ def insert_into_db(products, similars, categories, customers, reviews, conn):
         )
         conn.commit()
         print(f"[INFO] {len(similars_validos)} relações produto-similar inseridas")
-
-        # Reviews
         cur.executemany(
             "INSERT INTO review (asin, customer_id, review_date, rating, votes, helpful) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING;",
             reviews
